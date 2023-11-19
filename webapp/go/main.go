@@ -451,31 +451,23 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 		return nil, err
 	}
 
-	npIDs := make([]int64, len(normalPresents))
-	for i, np := range normalPresents {
-		npIDs[i] = np.ID
-	}
-
-	obtainPresents := make([]*UserPresent, 0)
-	receivedHistories := make([]UserPresentAllReceivedHistory, 0)
-	query2 := "SELECT * FROM user_present_all_received_history WHERE user_id=? AND 	present_all_id IN (?)"
-	err := tx.Select(&receivedHistories, query2, userID, npIDs)
-	if err != nil {
+	receivedList := make([]*UserPresentAllReceivedHistory, 0)
+	query = "SELECT * FROM user_present_all_received_history WHERE user_id=? AND present_all_id IN " +
+		"(SELECT id FROM present_all_masters WHERE registered_start_at <= ? AND registered_end_at >= ?)"
+	if err := tx.Select(&receivedList, query, userID, requestAt, requestAt); err != nil {
 		return nil, err
 	}
-
-	receivedMap := make(map[int64]UserPresentAllReceivedHistory)
-	for _, received := range receivedHistories {
+	receivedMap := make(map[int64]*UserPresentAllReceivedHistory)
+	for _, received := range receivedList {
 		receivedMap[received.PresentAllID] = received
 	}
+	obtainPresents := make([]*UserPresent, 0)
 
 	for _, np := range normalPresents {
-		if _, ok := receivedMap[np.ID]; ok {
+		received := receivedMap[np.ID]
+		if received != nil {
 			// プレゼント配布済
 			continue
-		}
-		if err != sql.ErrNoRows {
-			return nil, err
 		}
 
 		pID, err := h.generateID()

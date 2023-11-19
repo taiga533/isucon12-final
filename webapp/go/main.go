@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strconv"
 	"time"
+	"sync"
 
 	"net/http/pprof"
 
@@ -51,6 +52,8 @@ const (
 type Handler struct {
 	DB            *sqlx.DB
 	masterVersion *VersionMaster
+	UserOneTimeTokens map[int64]map[string]*UserOneTimeToken
+	mu                sync.Mutex
 }
 
 func main() {
@@ -92,6 +95,7 @@ func main() {
 	h := &Handler{
 		DB:            dbx,
 		masterVersion: masterVersion,
+		UserOneTimeTokens: make(map[int64]map[string]*UserOneTimeToken),
 	}
 
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{}))
@@ -250,29 +254,32 @@ func (h *Handler) checkSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc
 }
 
 // checkOneTimeToken ワンタイムトークンの確認用middleware
-func (h *Handler) checkOneTimeToken(token string, tokenType int, requestAt int64) error {
-	tk := new(UserOneTimeToken)
-	query := "SELECT * FROM user_one_time_tokens WHERE token=? AND token_type=? AND deleted_at IS NULL"
-	if err := h.DB.Get(tk, query, token, tokenType); err != nil {
-		if err == sql.ErrNoRows {
-			return ErrInvalidToken
-		}
-		return err
-	}
+func (h *Handler) checkOneTimeToken(token string, userId int64, tokenType int, requestAt int64) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	if tk.ExpiredAt < requestAt {
-		query = "UPDATE user_one_time_tokens SET deleted_at=? WHERE token=?"
-		if _, err := h.DB.Exec(query, requestAt, token); err != nil {
-			return err
-		}
+	userTokens, exists := h.UserOneTimeTokens[userId]
+	if !exists {
+		return ErrInvalidToken
+	}
+	tk, exists := userTokens[token]
+	if !exists {
 		return ErrInvalidToken
 	}
 
-	// 使ったトークンは失効する
-	query = "UPDATE user_one_time_tokens SET deleted_at=? WHERE token=?"
-	if _, err := h.DB.Exec(query, requestAt, token); err != nil {
-		return err
+	// トークンが削除されている場合
+	if tk.DeletedAt > 0 {
+		return ErrInvalidToken
 	}
+
+	// トークンの有効期限が切れている場合
+	if tk.ExpiredAt < requestAt {
+		tk.DeletedAt = requestAt
+		return ErrInvalidToken
+	}
+
+	// トークンを使用済みとしてマーク
+	tk.DeletedAt = requestAt
 
 	return nil
 }
@@ -1007,10 +1014,12 @@ func (h *Handler) listGacha(c echo.Context) error {
 	}
 
 	// ガチャ実行用のワンタイムトークンの発行
-	query = "UPDATE user_one_time_tokens SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
-	if _, err = h.DB.Exec(query, requestAt, userID); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
+	h.mu.Lock()
+	userTokens, exists := h.UserOneTimeTokens[userID]
+	for _, token := range userTokens {
+		token.DeletedAt = requestAt
 	}
+
 	tID, err := h.generateID()
 	if err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
@@ -1028,10 +1037,13 @@ func (h *Handler) listGacha(c echo.Context) error {
 		UpdatedAt: requestAt,
 		ExpiredAt: requestAt + 600,
 	}
-	query = "INSERT INTO user_one_time_tokens(id, user_id, token, token_type, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-	if _, err = h.DB.Exec(query, token.ID, token.UserID, token.Token, token.TokenType, token.CreatedAt, token.UpdatedAt, token.ExpiredAt); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
+	_, exists = h.UserOneTimeTokens[userID]
+	if !exists {
+		h.UserOneTimeTokens[userID] = make(map[string]*UserOneTimeToken)
 	}
+	h.UserOneTimeTokens[userID][token.Token] = token
+	
+	h.mu.Unlock()
 
 	return successResponse(c, &ListGachaResponse{
 		OneTimeToken: token.Token,
@@ -1081,7 +1093,7 @@ func (h *Handler) drawGacha(c echo.Context) error {
 		return errorResponse(c, http.StatusInternalServerError, ErrGetRequestTime)
 	}
 
-	if err = h.checkOneTimeToken(req.OneTimeToken, 1, requestAt); err != nil {
+	if err = h.checkOneTimeToken(req.OneTimeToken, userID, 1, requestAt); err != nil {
 		if err == ErrInvalidToken {
 			return errorResponse(c, http.StatusBadRequest, err)
 		}
@@ -1393,9 +1405,10 @@ func (h *Handler) listItem(c echo.Context) error {
 	}
 
 	// アイテムの強化に使うためのワンタイムトークンを発行
-	query = "UPDATE user_one_time_tokens SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
-	if _, err = h.DB.Exec(query, requestAt, userID); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
+	h.mu.Lock()
+	userTokens, exists := h.UserOneTimeTokens[userID]
+	for _, token := range userTokens {
+		token.DeletedAt = requestAt
 	}
 	tID, err := h.generateID()
 	if err != nil {
@@ -1414,10 +1427,14 @@ func (h *Handler) listItem(c echo.Context) error {
 		UpdatedAt: requestAt,
 		ExpiredAt: requestAt + 600,
 	}
-	query = "INSERT INTO user_one_time_tokens(id, user_id, token, token_type, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-	if _, err = h.DB.Exec(query, token.ID, token.UserID, token.Token, token.TokenType, token.CreatedAt, token.UpdatedAt, token.ExpiredAt); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
+
+	_, exists = h.UserOneTimeTokens[userID]
+	if !exists {
+		h.UserOneTimeTokens[userID] = make(map[string]*UserOneTimeToken)
 	}
+	h.UserOneTimeTokens[userID][token.Token] = token
+	
+	h.mu.Unlock()
 
 	return successResponse(c, &ListItemResponse{
 		OneTimeToken: token.Token,
@@ -1459,7 +1476,7 @@ func (h *Handler) addExpToCard(c echo.Context) error {
 		return errorResponse(c, http.StatusInternalServerError, ErrGetRequestTime)
 	}
 
-	if err = h.checkOneTimeToken(req.OneTimeToken, 2, requestAt); err != nil {
+	if err = h.checkOneTimeToken(req.OneTimeToken, userID, 2, requestAt); err != nil {
 		if err == ErrInvalidToken {
 			return errorResponse(c, http.StatusBadRequest, err)
 		}
@@ -2080,7 +2097,7 @@ type UserOneTimeToken struct {
 	ExpiredAt int64  `json:"expiredAt" db:"expired_at"`
 	CreatedAt int64  `json:"createdAt" db:"created_at"`
 	UpdatedAt int64  `json:"updatedAt" db:"updated_at"`
-	DeletedAt *int64 `json:"deletedAt,omitempty" db:"deleted_at"`
+	DeletedAt int64 `json:"deletedAt,omitempty" db:"deleted_at"`
 }
 
 // //////////////////////////////////////

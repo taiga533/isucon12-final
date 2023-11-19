@@ -15,7 +15,7 @@ import (
 
 	"net/http/pprof"
 
-	"github.com/go-sql-driver/mysql"
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v4"
@@ -38,6 +38,7 @@ var (
 	ErrUnauthorized             error = fmt.Errorf("unauthorized user")
 	ErrForbidden                error = fmt.Errorf("forbidden")
 	ErrGeneratePassword         error = fmt.Errorf("failed to password hash") //nolint:deadcode
+	IDGenerator                 *Snowflake
 )
 
 const (
@@ -64,6 +65,12 @@ func main() {
 		AllowHeaders: []string{"Content-Type", "x-master-version", "x-session"},
 	}))
 
+	idGenerator, err := NewSnowflake(1, 1)
+	if err != nil {
+		e.Logger.Fatalf("failed to generate id generator: %v", err)
+	}
+	IDGenerator = idGenerator
+
 	dbx, err := connectDB(false)
 	if err != nil {
 		e.Logger.Fatalf("failed to connect to db: %v", err)
@@ -71,6 +78,7 @@ func main() {
 	defer dbx.Close()
 
 	e.Server.Addr = fmt.Sprintf(":%v", "8080")
+
 	h := &Handler{
 		DB: dbx,
 	}
@@ -1862,25 +1870,7 @@ func noContentResponse(c echo.Context, status int) error {
 
 // generateID ユニークなIDを生成する
 func (h *Handler) generateID() (int64, error) {
-	var updateErr error
-	for i := 0; i < 100; i++ {
-		res, err := h.DB.Exec("UPDATE id_generator SET id=LAST_INSERT_ID(id+1)")
-		if err != nil {
-			if merr, ok := err.(*mysql.MySQLError); ok && merr.Number == 1213 {
-				updateErr = err
-				continue
-			}
-			return 0, err
-		}
-
-		id, err := res.LastInsertId()
-		if err != nil {
-			return 0, err
-		}
-		return id, nil
-	}
-
-	return 0, fmt.Errorf("failed to generate id: %w", updateErr)
+	return IDGenerator.Generate(), nil
 }
 
 // generateUUID UUIDの生成

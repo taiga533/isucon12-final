@@ -451,12 +451,25 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 		return nil, err
 	}
 
-	obtainPresents := make([]*UserPresent, 0)
+	npIDs := make([]int64, len(normalPresents))
+	for i, np := range normalPresents {
+		npIDs[i] = np.ID
+	}
+
+	receivedHistories := make([]UserPresentAllReceivedHistory, 0)
+	query2 := "SELECT * FROM user_present_all_received_history WHERE user_id=? AND 	present_all_id IN (?)"
+	err := tx.Select(&receivedHistories, query2, userID, npIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	receivedMap := make(map[int64]UserPresentAllReceivedHistory)
+	for _, received := range receivedHistories {
+		receivedMap[received.PresentAllID] = received
+	}
+
 	for _, np := range normalPresents {
-		received := new(UserPresentAllReceivedHistory)
-		query = "SELECT * FROM user_present_all_received_history WHERE user_id=? AND present_all_id=?"
-		err := tx.Get(received, query, userID, np.ID)
-		if err == nil {
+		if _, ok := receivedMap[np.ID]; ok {
 			// プレゼント配布済
 			continue
 		}
@@ -866,8 +879,8 @@ func (h *Handler) login(c echo.Context) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	query = "DELETE FROM user_sessions WHERE user_id=? AND deleted_at IS NULL"
-	if _, err = tx.Exec(query, req.UserID); err != nil {
+	query = "UPDATE user_sessions SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
+	if _, err = tx.Exec(query, requestAt, req.UserID); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 	sID, err := h.generateID()

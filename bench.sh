@@ -19,14 +19,14 @@ echo 'pprof仕掛ける'
 ssh isucon12-1 -N -L 8081:127.0.0.1:8080 &
 tunnel_pid=$!
 sleep 3
-go tool pprof  -http=":8082" -seconds 150 http://127.0.0.1:8081/debug/pprof/profile &
+go tool pprof -http=":8082" -seconds 150 http://127.0.0.1:8081/debug/pprof/profile &
 pprof_pid=$!
-sleep 3
 
 
 echo
-echo 'ベンチマークを実行して、完了したらエンター'
-read hoge
+echo 'ベンチマークを実行してください。2分半後にログとプロファイル結果の収集が行われます'
+
+sleep 155
 
 echo 'ろぐかいしゅう'
 mkdir -p bench_log/nginx

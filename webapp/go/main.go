@@ -456,6 +456,7 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 		npIDs[i] = np.ID
 	}
 
+	obtainPresents := make([]*UserPresent, 0)
 	receivedHistories := make([]UserPresentAllReceivedHistory, 0)
 	query2 := "SELECT * FROM user_present_all_received_history WHERE user_id=? AND 	present_all_id IN (?)"
 	err := tx.Select(&receivedHistories, query2, userID, npIDs)

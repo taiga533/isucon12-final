@@ -141,6 +141,7 @@ func connectDB(batch bool) (*sqlx.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	dbx.SetMaxIdleConns(100)
 	return dbx, nil
 }
 

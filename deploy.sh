@@ -53,5 +53,5 @@ do
     echo "Application deployed to $server"
 done
 
-#echo プロファイラーとか起動
-#./bench.sh
+echo プロファイラーとか起動
+./bench.sh

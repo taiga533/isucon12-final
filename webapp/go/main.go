@@ -49,7 +49,8 @@ const (
 )
 
 type Handler struct {
-	DB *sqlx.DB
+	DB            *sqlx.DB
+	masterVersion *VersionMaster
 }
 
 func main() {
@@ -79,14 +80,24 @@ func main() {
 
 	e.Server.Addr = fmt.Sprintf(":%v", "8080")
 
+	query := "SELECT * FROM version_masters WHERE status=1"
+	masterVersion := new(VersionMaster)
+	if err := dbx.Get(masterVersion, query); err != nil {
+		if err == sql.ErrNoRows {
+			e.Logger.Fatalf("active master version is not found")
+		}
+		e.Logger.Fatalf(" %v", err)
+	}
+
 	h := &Handler{
-		DB: dbx,
+		DB:            dbx,
+		masterVersion: masterVersion,
 	}
 
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{}))
 
 	// utility
-	e.POST("/initialize", initialize)
+	e.POST("/initialize", h.initialize)
 	e.GET("/health", h.health)
 
 	// feature
@@ -168,17 +179,7 @@ func (h *Handler) apiMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		}
 		c.Set("requestTime", requestAt.Unix())
 
-		// 有効なマスタデータか確認
-		query := "SELECT * FROM version_masters WHERE status=1"
-		masterVersion := new(VersionMaster)
-		if err := h.DB.Get(masterVersion, query); err != nil {
-			if err == sql.ErrNoRows {
-				return errorResponse(c, http.StatusNotFound, fmt.Errorf("active master version is not found"))
-			}
-			return errorResponse(c, http.StatusInternalServerError, err)
-		}
-
-		if masterVersion.MasterVersion != c.Request().Header.Get("x-master-version") {
+		if h.masterVersion.MasterVersion != c.Request().Header.Get("x-master-version") {
 			return errorResponse(c, http.StatusUnprocessableEntity, ErrInvalidMasterVersion)
 		}
 
@@ -633,12 +634,19 @@ func (h *Handler) obtainItem(tx *sqlx.Tx, userID, itemID int64, itemType int, ob
 
 // initialize 初期化処理
 // POST /initialize
-func initialize(c echo.Context) error {
+func (h *Handler) initialize(c echo.Context) error {
 	dbx, err := connectDB(true)
 	if err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 	defer dbx.Close()
+
+	query := "SELECT * FROM version_masters WHERE status=1"
+	masterVersion := new(VersionMaster)
+	if err := dbx.Get(masterVersion, query); err != nil {
+		errorResponse(c, http.StatusInternalServerError, err)
+	}
+	h.masterVersion = masterVersion
 
 	out, err := exec.Command("/bin/sh", "-c", SQLDirectory+"init.sh").CombinedOutput()
 	if err != nil {

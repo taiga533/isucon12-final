@@ -245,6 +245,13 @@ func (h *Handler) adminUpdateMaster(c echo.Context) error {
 		if _, err = tx.NamedExec(query, data); err != nil {
 			return errorResponse(c, http.StatusInternalServerError, err)
 		}
+		query = "SELECT * FROM version_masters WHERE status=1"
+		newMasterVersion := new(VersionMaster)
+		if err := tx.Get(newMasterVersion, query); err != nil {
+			return errorResponse(c, http.StatusInternalServerError, err)
+		}
+
+		h.masterVersion = newMasterVersion
 	} else {
 		c.Logger().Debug("Skip Update Master: versionMaster")
 	}
@@ -641,6 +648,7 @@ type AdminBanUserResponse struct {
 }
 
 // hashPassword パスワードをハッシュ化する
+//
 //nolint:deadcode,unused
 func hashPassword(pw string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)

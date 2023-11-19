@@ -1,5 +1,7 @@
 #! /bin/bash
 
+CONTAIN_SQL=$1
+
 # gitのルートディレクトリに移動
 cd "$(git rev-parse --show-toplevel)"
 
@@ -36,12 +38,14 @@ do
         continue
     fi
 
-    echo 初期化用SQLをコピーします。
-    scp -r "$app_path/sql" "$user@$server:$remote_path"
-    if [ $? -ne 0 ]; then
-        echo "Error copying files to $server"
-        continue
-    fi
+    [[ -z $CONTAIN_SQL ]] || {
+        echo 初期化用SQLをコピーします。
+        scp -r "$app_path/sql" "$user@$server:$remote_path"
+        if [ $? -ne 0 ]; then
+            echo "Error copying files to $server"
+            continue
+        fi
+    }
 
     echo サービス起動
     ssh "$user@$server" "sudo systemctl restart isuconquest.go.service"
